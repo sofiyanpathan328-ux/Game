@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#101010">
+<title>Arrow Quest — Archery Game</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #101010; color: #f5f5f5;
+    font-family: Arial, Helvetica, sans-serif; display: grid; place-items: center;
+    padding: 18px;
+  }
+  .game { width: min(960px, 100%); }
+  header { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+  h1 { margin:0; font-size:clamp(1.5rem, 5vw, 2.4rem); letter-spacing:-1px; }
+  .sub { color:#aaa; font-size:.9rem; margin-top:5px; }
+  .stats { display:flex; gap:8px; flex-wrap:wrap; }
+  .stat { border:1px solid #444; background:#1b1b1b; padding:9px 12px; border-radius:10px; font-size:.85rem; }
+  .stat b { color:white; }
+  .stage {
+    position:relative; border:1px solid #444; border-radius:16px; overflow:hidden;
+    background:#c9d8d8; box-shadow:0 18px 55px #0009;
+  }
+  canvas { display:block; width:100%; height:auto; touch-action: none; }
+  .overlay {
+    position:absolute; inset:0; display:grid; place-items:center; padding:20px;
+    background:#050505b8; text-align:center;
+  }
+  .panel { max-width:420px; padding:26px; border:1px solid #777; border-radius:16px; background:#151515f2; }
+  .panel h2 { font-size:2rem; margin:0 0 10px; }
+  .panel p { color:#ccc; line-height:1.5; }
+  button {
+    border:0; border-radius:10px; background:#f4f4f4; color:#111; font-weight:800;
+    padding:13px 20px; font-size:1rem; cursor:pointer;
+  }
+  button:active { transform:scale(.97); }
+  .hint { color:#aaa; font-size:.82rem; line-height:1.5; margin:12px 0 0; }
+  .controls { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:13px; flex-wrap:wrap; }
+  .power { color:#bbb; font-size:.85rem; }
+  @media(max-width:560px) {
+    header { align-items:flex-start; flex-direction:column; }
+    .stat { padding:7px 9px; }
+    .controls { align-items:flex-start; }
+  }
+</style>
+</head>
+<body>
+<div class="game">
+  <header>
+    <div><h1>🏹 ARROW QUEST</h1><div class="sub">Aim. Pull. Release. Hit the bullseye.</div></div>
+    <div class="stats">
+      <div class="stat">SCORE <b id="score">0</b></div>
+      <div class="stat">ARROWS <b id="arrows">10</b></div>
+      <div class="stat">BEST <b id="best">0</b></div>
+    </div>
+  </header>
+
+  <div class="stage">
+    <canvas id="gameCanvas" width="900" height="520" aria-label="Archery game canvas"></canvas>
+    <div class="overlay" id="overlay">
+      <div class="panel">
+        <h2 id="overlayTitle">Ready, Archer?</h2>
+        <p id="overlayText">Drag back from the bow, aim at the target, then release to shoot. The farther you pull, the more powerful the shot.</p>
+        <button id="startBtn">START GAME</button>
+        <div class="hint">Works with mouse and touchscreen. You have 10 arrows.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="power">CONTROL: Touch / click and drag from the bow to aim.</div>
+    <button id="restartBtn" type="button">↻ RESTART</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const arrowsEl = document.getElementById('arrows');
+  const bestEl = document.getElementById('best');
+  const overlay = document.getElementById('overlay');
+  const overlayTitle = document.getElementById('overlayTitle');
+  const overlayText = document.getElementById('overlayText');
+  const startBtn = document.getElementById('startBtn');
+
+  const W = canvas.width, H = canvas.height;
+  const bow = { x: 145, y: 330 };
+  const target = { x: 760, y: 250, r: 62, vx: 0.7, vy: 0.45 };
+  let score = 0, arrows = 10, best = Number(localStorage.getItem('arrowQuestBest') || 0);
+  let active = false, dragging = false, pointer = null, arrow = null;
+  let shots = [], message = '', messageTimer = 0, lastTime = 0;
+
+  bestEl.textContent = best;
+
+  function resetGame() {
+    score = 0; arrows = 10; shots = []; arrow = null;
+    target.x = 760; target.y = 250; target.vx = 0.7; target.vy = 0.45;
+    updateStats(); active = true; dragging = false;
+    overlay.style.display = 'none';
+  }
+  function updateStats() {
+    scoreEl.textContent = score;
+    arrowsEl.textContent = arrows;
+    bestEl.textContent = best;
+  }
+  function posFromEvent(e) {
+    const r = canvas.getBoundingClientRect();
+    return { x:(e.clientX-r.left)*W/r.width, y:(e.clientY-r.top)*H/r.height };
+  }
+  function pointerDown(e) {
+    if (!active || arrow || arrows <= 0) return;
+    const p = posFromEvent(e);
+    const d = Math.hypot(p.x-bow.x, p.y-bow.y);
+    if (d < 95) {
+      dragging = true; pointer = p;
+      canvas.setPointerCapture(e.pointerId);
+    }
+  }
+  function pointerMove(e) { if (dragging) pointer = posFromEvent(e); }
+  function pointerUp() {
+    if (!dragging || !pointer) return;
+    const dx = bow.x-pointer.x, dy = bow.y-pointer.y;
+    const pull = Math.min(125, Math.hypot(dx,dy));
+    if (pull > 12) {
+      const power = pull * 0.105;
+      arrow = {
+        x: bow.x+28, y: bow.y,
+        vx: (dx/(Math.hypot(dx,dy)||1))*power*5.2,
+        vy: (dy/(Math.hypot(dx,dy)||1))*power*5.2,
+        angle: Math.atan2(dy,dx), flying:true
+      };
+      arrows--;
+      updateStats();
+    }
+    dragging = false; pointer = null;
+  }
+  canvas.addEventListener('pointerdown', pointerDown);
+  canvas.addEventListener('pointermove', pointerMove);
+  canvas.addEventListener('pointerup', pointerUp);
+  canvas.addEventListener('pointercancel', pointerUp);
+
+  function drawBackground() {
+    const sky = ctx.createLinearGradient(0,0,0,H);
+    sky.addColorStop(0,'#cbdcdd'); sky.addColorStop(1,'#edf0e4');
+    ctx.fillStyle=sky; ctx.fillRect(0,0,W,H);
+    // distant hills
+    ctx.fillStyle='#9eafa2';
+    ctx.beginPath(); ctx.moveTo(0,340); ctx.quadraticCurveTo(180,230,360,345);
+    ctx.quadraticCurveTo(560,220,900,340); ctx.lineTo(900,520); ctx.lineTo(0,520); ctx.fill();
+    ctx.fillStyle='#718b76'; ctx.fillRect(0,420,W,100);
+    // grass details
+    ctx.strokeStyle='#536d59'; ctx.lineWidth=2;
+    for(let i=10;i<W;i+=28){ ctx.beginPath(); ctx.moveTo(i,440+(i%5)*7); ctx.lineTo(i-5,425+(i%5)*7); ctx.stroke(); }
+    // target stand
+    ctx.fillStyle='#59402b'; ctx.fillRect(target.x-7,target.y+target.r-3,14,170);
+    ctx.fillStyle='#3b2b20'; ctx.fillRect(target.x-45,target.y+155,90,12);
+  }
+  function drawTarget() {
+    const rings = [
+      {r:target.r,c:'#f5f5f5'}, {r:target.r*.78,c:'#222'},
+      {r:target.r*.56,c:'#f5f5f5'}, {r:target.r*.34,c:'#222'},
+      {r:target.r*.15,c:'#d6d6d6'}
+    ];
+    for(const ring of rings) {
+      ctx.beginPath(); ctx.arc(target.x,target.y,ring.r,0,Math.PI*2);
+      ctx.fillStyle=ring.c; ctx.fill();
+      ctx.strokeStyle='#111'; ctx.lineWidth=2; ctx.stroke();
+    }
+  }
+  function drawBow() {
+    ctx.save(); ctx.translate(bow.x,bow.y);
+    ctx.strokeStyle='#35251a'; ctx.lineWidth=9; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(0,-92); ctx.quadraticCurveTo(72,0,0,92); ctx.stroke();
+    ctx.strokeStyle='#eee'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(0,-92); ctx.lineTo(0,92); ctx.stroke();
+    ctx.restore();
+    if(dragging && pointer) {
+      ctx.strokeStyle='#333'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(bow.x,bow.y-92); ctx.lineTo(pointer.x,pointer.y); ctx.lineTo(bow.x,bow.y+92); ctx.stroke();
+      ctx.setLineDash([7,7]); ctx.beginPath(); ctx.moveTo(bow.x,bow.y); ctx.lineTo(bow.x+(bow.x-pointer.x)*2.3,bow.y+(bow.y-pointer.y)*2.3); ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+  function drawArrow(a) {
+    ctx.save(); ctx.translate(a.x,a.y); ctx.rotate(a.angle);
+    ctx.strokeStyle='#292929'; ctx.lineWidth=4;
+    ctx.beginPath(); ctx.moveTo(-38,0); ctx.lineTo(15,0); ctx.stroke();
+    ctx.fillStyle='#333'; ctx.beginPath(); ctx.moveTo(27,0); ctx.lineTo(10,-7); ctx.lineTo(10,7); ctx.closePath(); ctx.fill();
+    ctx.fillStyle='#fafafa'; ctx.beginPath(); ctx.moveTo(-36,0); ctx.lineTo(-47,-9); ctx.lineTo(-42,0); ctx.lineTo(-47,9); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  function shootUpdate(dt) {
+    target.x += target.vx*dt; target.y += target.vy*dt;
+    if(target.x>815 || target.x<690) target.vx *= -1;
+    if(target.y>315 || target.y<185) target.vy *= -1;
+    if(arrow && arrow.flying) {
+      arrow.vy += 0.0017*dt*16;
+      arrow.x += arrow.vx*dt*0.06; arrow.y += arrow.vy*dt*0.06;
+      arrow.angle = Math.atan2(arrow.vy,arrow.vx);
+      const distance = Math.hypot(arrow.x-target.x,arrow.y-target.y);
+      if(distance < target.r+8) {
+        const hitRadius = Math.hypot(arrow.x-target.x,arrow.y-target.y);
+        let points = hitRadius < target.r*.15 ? 10 : hitRadius < target.r*.34 ? 8 : hitRadius < target.r*.56 ? 5 : hitRadius < target.r*.78 ? 3 : 1;
+        score += points; message = `+${points} POINTS!`; messageTimer = 65;
+        shots.push({x:arrow.x,y:arrow.y,angle:arrow.angle});
+        arrow = null; updateStats();
+      } else if(arrow.x>W+40 || arrow.y>H+40 || arrow.y<-40) {
+        arrow = null;
+      }
+      if(!arrow && arrows===0) endIfDone();
+    }
+    if(messageTimer>0) messageTimer--;
+  }
+  function endIfDone() {
+    active=false;
+    if(score>best){ best=score; localStorage.setItem('arrowQuestBest',String(best)); }
+    updateStats();
+    overlayTitle.textContent = 'GAME OVER';
+    overlayText.textContent = `Final score: ${score}. ${score>=50?'Bullseye skills!':'Keep practicing — your next shot can be better.'}`;
+    startBtn.textContent='PLAY AGAIN';
+    overlay.style.display='grid';
+  }
+  function draw() {
+    drawBackground(); drawTarget(); drawBow();
+    shots.forEach(s=>drawArrow(s));
+    if(arrow) drawArrow(arrow);
+    if(messageTimer>0) {
+      ctx.fillStyle='#111'; ctx.font='bold 25px Arial'; ctx.textAlign='center';
+      ctx.fillText(message, W/2, 65);
+    }
+    if(dragging) {
+      ctx.fillStyle='#111'; ctx.font='16px Arial'; ctx.textAlign='left';
+      ctx.fillText('Release to shoot!',25,35);
+    }
+  }
+  function loop(time) {
+    const dt=Math.min(32,time-lastTime || 16); lastTime=time;
+    if(active && !dragging) shootUpdate(dt);
+    draw(); requestAnimationFrame(loop);
+  }
+  startBtn.addEventListener('click', resetGame);
+  document.getElementById('restartBtn').addEventListener('click', () => {
+    overlayTitle.textContent='Ready, Archer?';
+    overlayText.textContent='Drag back from the bow, aim at the target, then release to shoot. The farther you pull, the more powerful the shot.';
+    startBtn.textContent='START GAME'; overlay.style.display='grid'; active=false;
+  });
+  draw(); requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
